@@ -31,20 +31,24 @@ app.use('/api', (req, res, next) => {
 });
 
 // --- SSRF: validación de URLs de webhook ---
+const PRIVATE_HOSTS = new Set(['localhost', '0.0.0.0', '::1', '::']);
 function isPrivateHost(hostname) {
-  const h = (hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
-  if (h === 'localhost' || h.endsWith('.localhost')) return true;
-  if (h === '0.0.0.0' || h === '::1' || h === '::') return true;
+  const h = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (PRIVATE_HOSTS.has(h)) return true;
+  if (h.endsWith('.localhost')) return true;
+
   const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (m) {
-    const a = +m[1], b = +m[2];
-    if (a === 127) return true;                 // loopback
-    if (a === 10) return true;                  // 10.0.0.0/8
-    if (a === 192 && b === 168) return true;    // 192.168.0.0/16
-    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
-    if (a === 169 && b === 254) return true;    // link-local
-  }
-  return false;
+  if (!m) return false;
+
+  const a = Number(m[1]), b = Number(m[2]);
+  const blocks = {
+    127: true,
+    10: true,
+    192: b === 168,
+    172: b >= 16 && b <= 31,
+    169: b === 254
+  };
+  return !!blocks[a];
 }
 
 // Devuelve un mensaje de error si la URL no es segura, o null si es válida.
@@ -229,118 +233,92 @@ app.delete('/api/tables/:tableName/rows/:rowid', async (req, res) => {
   }
 });
 
+// --- IMPORT HELPERS ---
+
+function parseSpreadsheet(filePath) {
+  let workbook;
+  try {
+    workbook = xlsx.readFile(filePath, { cellText: true, cellDates: true });
+  } catch (parseErr) {
+    throw new Error('Archivo inválido o corrupto: no se pudo interpretar como hoja de cálculo.');
+  }
+  const firstSheetName = workbook.SheetNames[0];
+  const worksheet = workbook.Sheets[firstSheetName];
+  const data = xlsx.utils.sheet_to_json(worksheet, { defval: "", raw: false });
+  if (data.length === 0) throw new Error('El archivo Excel está vacío.');
+  return data;
+}
+
+function inferColumnType(colName, data) {
+  let type = 'INTEGER';
+  let hasData = false;
+  const rowsToScan = Math.min(data.length, 100);
+  
+  for (let i = 0; i < rowsToScan; i++) {
+    const val = data[i][colName];
+    if (val === undefined || val === null || val === "") continue;
+    
+    hasData = true;
+    const strVal = String(val).trim();
+    
+    if (/^0\d+/.test(strVal)) return 'TEXT';
+    if (isNaN(strVal)) return 'TEXT';
+    if (strVal.includes('.')) type = 'REAL';
+  }
+  
+  return hasData ? type : 'TEXT';
+}
+
+function inferTableSchema(columns, data) {
+  return columns.map(col => {
+    const cleanCol = col.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+    const type = inferColumnType(col, data);
+    return { name: cleanCol, type };
+  });
+}
+
+function sanitizeRows(columns, data) {
+  return data.map(row => {
+    const rowData = {};
+    columns.forEach(col => {
+      const cleanCol = col.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+      rowData[cleanCol] = row[col];
+    });
+    return rowData;
+  });
+}
+
 // 9. Importar un archivo Excel/CSV y convertirlo a tabla SQLite
 app.post('/api/import', upload.single('file'), async (req, res) => {
-  const { targetTable, newTableName, upsertKey } = req.body;
-  
-  if (!req.file) {
-    return res.status(400).json({ success: false, error: 'No se subió ningún archivo.' });
-  }
-
+  if (!req.file) return res.status(400).json({ success: false, error: 'No se subió ningún archivo.' });
   const filePath = req.file.path;
+  const { targetTable, newTableName, upsertKey } = req.body;
   const finalTableName = newTableName || targetTable;
 
-  // Validar estrictamente la clave de upsert para evitar inyección SQL en posición de columna
   if (upsertKey && !/^[a-zA-Z0-9_-]+$/.test(upsertKey)) {
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
     return res.status(400).json({ success: false, error: 'upsertKey inválido.' });
   }
 
   try {
-    // Leer el archivo con XLSX (forzando texto crudo para no perder ceros a la izquierda).
-    // Si el contenido es basura/binario no-spreadsheet, devolvemos un 400 limpio (no un 500).
-    let workbook;
-    try {
-      workbook = xlsx.readFile(filePath, { cellText: true, cellDates: true });
-    } catch (parseErr) {
-      throw new Error('Archivo inválido o corrupto: no se pudo interpretar como hoja de cálculo.');
-    }
-    const firstSheetName = workbook.SheetNames[0];
-    const worksheet = workbook.Sheets[firstSheetName];
-    
-    // Convertir hoja a JSON
-    // raw: false fuerza a extraer el texto formateado (ej. "007" en vez del número 7)
-    const data = xlsx.utils.sheet_to_json(worksheet, { defval: "", raw: false });
-
-    if (data.length === 0) {
-      throw new Error('El archivo Excel está vacío.');
-    }
-
-    // Obtener los nombres de las columnas a partir de las llaves del primer objeto
+    const data = parseSpreadsheet(filePath);
     const columns = Object.keys(data[0]);
-
-    // Sanitizar nombres de columnas y tabla
-    const sanitizedTableName = finalTableName.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
-    const existingTables = await db.getTables();
-    const tableExists = existingTables.includes(sanitizedTableName);
-
-    if (!tableExists) {
-      // Crear tabla nueva
-      const columnDefs = columns.map(col => {
-        const cleanCol = col.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
-        
-        let type = 'INTEGER'; // Asumimos INTEGER y degradamos según encontramos datos
-        let hasData = false;
-        
-        // Escaneamos hasta 100 filas para inferir el tipo de forma más robusta
-        const rowsToScan = Math.min(data.length, 100);
-        
-        for (let i = 0; i < rowsToScan; i++) {
-          const val = data[i][col];
-          if (val === undefined || val === null || val === "") continue;
-          
-          hasData = true;
-          const strVal = String(val).trim();
-          
-          // Si tiene ceros a la izquierda (y no es el cero aislado), forzamos TEXT (ej: "007", "0921")
-          if (/^0\d+/.test(strVal)) {
-            type = 'TEXT';
-            break;
-          }
-          
-          if (isNaN(strVal)) {
-            type = 'TEXT';
-            break;
-          } else if (strVal.includes('.')) {
-            type = 'REAL';
-          }
-        }
-        
-        if (!hasData) type = 'TEXT'; // Si no hay datos, por seguridad es TEXT
-        
-        return { name: cleanCol, type };
-      });
-
-      await db.createTable(sanitizedTableName, columnDefs);
+    const tableName = finalTableName.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+    
+    if (!(await db.getTables()).includes(tableName)) {
+      await db.createTable(tableName, inferTableSchema(columns, data));
     }
 
-    // Construir las filas con los nombres de columna saneados
-    const cleanRows = data.map(row => {
-      const rowData = {};
-      columns.forEach(col => {
-        const cleanCol = col.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
-        rowData[cleanCol] = row[col];
-      });
-      return rowData;
-    });
-
-    // Inserción ATÓMICA: si cualquier fila falla, ROLLBACK total (sin filas huérfanas).
-    const { insertCount, updateCount, events } = await db.bulkImport(sanitizedTableName, cleanRows, upsertKey);
-
-    // Los webhooks se disparan SOLO tras un commit exitoso
-    for (const ev of events) fireWebhooks(ev.event, sanitizedTableName, ev.data);
-
-    // Eliminar archivo temporal
+    const { insertCount, updateCount, events } = await db.bulkImport(tableName, sanitizeRows(columns, data), upsertKey);
+    for (const ev of events) fireWebhooks(ev.event, tableName, ev.data);
     fs.unlinkSync(filePath);
 
     res.json({ 
       success: true, 
-      message: `Archivo importado con éxito. Se insertaron ${insertCount} filas y se actualizaron ${updateCount} filas en la tabla "${sanitizedTableName}".`,
-      tableName: sanitizedTableName
+      message: `Archivo importado. Se insertaron ${insertCount} filas y se actualizaron ${updateCount} filas en la tabla "${tableName}".`,
+      tableName: tableName
     });
-
   } catch (err) {
-    // Limpiar archivo temporal en caso de error
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
     sendErr(res, err);
   }

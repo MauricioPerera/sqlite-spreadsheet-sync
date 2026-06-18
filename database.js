@@ -35,6 +35,12 @@ function normalizeColumnType(rawType) {
 // Valida que los valores de "data" sean compatibles con el tipo declarado en el esquema.
 // Las columnas numéricas (INTEGER/REAL/NUMERIC) rechazan texto no numérico.
 // Valores null o cadena vacía se consideran válidos (se guardarán como NULL).
+function validateNumericField(key, value, declaredType) {
+  if (value === null || value === undefined || value === '') return;
+  if (isNaN(value)) throw new Error(`La columna "${key}" es ${declaredType} y requiere un valor numérico (recibido: "${value}").`);
+}
+
+// Valida que los valores de "data" sean compatibles con el tipo declarado en el esquema.
 function validateDataAgainstSchema(tableName, data) {
   return getTableSchema(tableName).then(schema => {
     const typeByName = {};
@@ -43,16 +49,38 @@ function validateDataAgainstSchema(tableName, data) {
     for (const key of Object.keys(data || {})) {
       const declaredType = typeByName[key];
       if (!declaredType) continue; // columna desconocida: SQL la rechazará después
-      const isNumeric = declaredType.includes('INT') || declaredType.includes('REAL') || declaredType.includes('NUMERIC');
-      if (!isNumeric) continue;
-
-      const value = data[key];
-      if (value === null || value === undefined || value === '') continue; // -> NULL
-      if (isNaN(value)) {
-        throw new Error(`La columna "${key}" es ${declaredType} y requiere un valor numérico (recibido: "${value}").`);
-      }
+      const isNumeric = /INT|REAL|NUMERIC/.test(declaredType);
+      if (isNumeric) validateNumericField(key, data[key], declaredType);
     }
     return true;
+  });
+}
+
+// Inicializar la base de datos con una tabla de ejemplo si está vacía
+function seedExampleTable() {
+  return new Promise((resolve, reject) => {
+    db.run(`
+      CREATE TABLE inventario (
+        producto TEXT NOT NULL,
+        categoria TEXT,
+        cantidad INTEGER DEFAULT 0,
+        precio REAL DEFAULT 0.0,
+        fecha_ingreso TEXT
+      )
+    `, (err) => {
+      if (err) return reject(err);
+      const stmt = db.prepare(`INSERT INTO inventario (producto, categoria, cantidad, precio, fecha_ingreso) VALUES (?, ?, ?, ?, ?)`);
+      stmt.run('Computadora Portátil', 'Electrónica', 15, 850.50, '2026-06-01');
+      stmt.run('Teclado Mecánico', 'Accesorios', 42, 45.99, '2026-06-10');
+      stmt.run('Mouse Inalámbrico', 'Accesorios', 60, 25.00, '2026-06-12');
+      stmt.run('Monitor 27 pulgadas', 'Electrónica', 8, 199.90, '2026-06-15');
+      stmt.run('Silla Ergonómica', 'Muebles', 10, 150.00, '2026-06-18');
+      stmt.finalize((err) => {
+        if (err) return reject(err);
+        console.log('Tabla de ejemplo "inventario" creada con éxito.');
+        resolve();
+      });
+    });
   });
 }
 
@@ -61,14 +89,7 @@ function initDatabase() {
   return new Promise((resolve, reject) => {
     db.serialize(() => {
       // Crear tabla interna de webhooks
-      db.run(`
-        CREATE TABLE IF NOT EXISTS _webhooks (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          event TEXT NOT NULL,
-          target_table TEXT DEFAULT '*',
-          url TEXT NOT NULL
-        )
-      `);
+      db.run(`CREATE TABLE IF NOT EXISTS _webhooks (id INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL, target_table TEXT DEFAULT '*', url TEXT NOT NULL)`);
 
       // Comprobar si hay tablas existentes (excluyendo la de webhooks)
       db.all("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != '_webhooks'", (err, tables) => {
@@ -76,37 +97,7 @@ function initDatabase() {
 
         if (tables.length === 0) {
           console.log('Base de datos nueva detectada. Creando tabla de ejemplo: inventario...');
-          
-          // Crear tabla de ejemplo
-          db.run(`
-            CREATE TABLE inventario (
-              producto TEXT NOT NULL,
-              categoria TEXT,
-              cantidad INTEGER DEFAULT 0,
-              precio REAL DEFAULT 0.0,
-              fecha_ingreso TEXT
-            )
-          `, (err) => {
-            if (err) return reject(err);
-
-            // Insertar datos de prueba
-            const stmt = db.prepare(`
-              INSERT INTO inventario (producto, categoria, cantidad, precio, fecha_ingreso)
-              VALUES (?, ?, ?, ?, ?)
-            `);
-
-            stmt.run('Computadora Portátil', 'Electrónica', 15, 850.50, '2026-06-01');
-            stmt.run('Teclado Mecánico', 'Accesorios', 42, 45.99, '2026-06-10');
-            stmt.run('Mouse Inalámbrico', 'Accesorios', 60, 25.00, '2026-06-12');
-            stmt.run('Monitor 27 pulgadas', 'Electrónica', 8, 199.90, '2026-06-15');
-            stmt.run('Silla Ergonómica', 'Muebles', 10, 150.00, '2026-06-18');
-            
-            stmt.finalize((err) => {
-              if (err) return reject(err);
-              console.log('Tabla de ejemplo "inventario" creada con éxito.');
-              resolve();
-            });
-          });
+          seedExampleTable().then(resolve).catch(reject);
         } else {
           console.log(`Base de datos conectada. Tablas encontradas: ${tables.map(t => t.name).join(', ')}`);
           resolve();
@@ -352,81 +343,88 @@ function deleteWebhook(id) {
 // de tipo), se hace ROLLBACK completo: no quedan filas "huérfanas".
 // `rows` son objetos con las claves de columna ya saneadas.
 // Devuelve { insertCount, updateCount, events } — los webhooks se disparan FUERA, tras el commit.
+function validateRowTypes(rowData, keys, numericCols) {
+  for (const k of keys) {
+    if (!numericCols.has(k)) continue;
+    const v = rowData[k];
+    if (v === null || v === undefined || v === '') continue;
+    if (isNaN(v)) throw new Error(`La columna "${k}" requiere un valor numérico (recibido: "${v}").`);
+  }
+}
+
+async function processUpsert({ tableName, run, all, rowData, keys, values, upsertKey }) {
+  if (!upsertKey || rowData[upsertKey] === undefined) return null;
+  const existing = await all(`SELECT rowid AS _rowid FROM ${tableName} WHERE ${upsertKey} = ?`, [rowData[upsertKey]]);
+  if (existing.length === 0) return null;
+
+  const rowid = existing[0]._rowid;
+  const setClauses = keys.map(k => `${k} = ?`).join(', ');
+  await run(`UPDATE ${tableName} SET ${setClauses} WHERE rowid = ?`, [...values, rowid]);
+  return { event: 'row_updated', data: { _rowid: rowid, ...rowData } };
+}
+
+async function processInsert(tableName, run, rowData, keys, values) {
+  let insSql = `INSERT INTO ${tableName} DEFAULT VALUES`;
+  if (keys.length > 0) {
+    insSql = `INSERT INTO ${tableName} (${keys.join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`;
+  }
+  const r = await run(insSql, values);
+  return { event: 'row_created', data: { _rowid: r.lastID, ...rowData } };
+}
+
+function getNumericCols(schema) {
+  return new Set(schema.filter(c => /INT|REAL|NUMERIC/.test(String(c.type || '').toUpperCase())).map(c => c.name));
+}
+
+function initDbTx() {
+  const cx = new sqlite3.Database(dbPath);
+  const run = (sql, params = []) => new Promise((res, rej) => cx.run(sql, params, function (err) { err ? rej(err) : res(this); }));
+  const all = (sql, params = []) => new Promise((res, rej) => cx.all(sql, params, (err, r) => err ? rej(err) : res(r)));
+  return { cx, run, all };
+}
+
+async function runImportTransaction({ rows, tableName, upsertKey, numericCols, run, all }) {
+  let insertCount = 0, updateCount = 0;
+  const events = [];
+  await run('PRAGMA busy_timeout = 5000');
+  await run('BEGIN');
+  for (const rowData of rows) {
+    const keys = Object.keys(rowData).filter(k => /^[a-zA-Z0-9_-]+$/.test(k));
+    validateRowTypes(rowData, keys, numericCols);
+    const values = keys.map(k => rowData[k] === '' ? null : rowData[k]);
+    
+    const ctx = { tableName, run, all, rowData, keys, values, upsertKey };
+    const upEvent = await processUpsert(ctx);
+    if (upEvent) {
+      events.push(upEvent);
+      updateCount++;
+    } else {
+      events.push(await processInsert(tableName, run, rowData, keys, values));
+      insertCount++;
+    }
+  }
+  await run('COMMIT');
+  return { insertCount, updateCount, events };
+}
+
+// Importación masiva ATÓMICA.
 function bulkImport(tableName, rows, upsertKey) {
   return new Promise((resolve, reject) => {
-    if (!/^[a-zA-Z0-9_-]+$/.test(tableName)) {
-      return reject(new Error('Nombre de tabla inválido'));
-    }
-    if (upsertKey && !/^[a-zA-Z0-9_-]+$/.test(upsertKey)) {
-      return reject(new Error('upsertKey inválido'));
-    }
+    if (!/^[a-zA-Z0-9_-]+$/.test(tableName)) return reject(new Error('Nombre de tabla inválido'));
+    if (upsertKey && !/^[a-zA-Z0-9_-]+$/.test(upsertKey)) return reject(new Error('upsertKey inválido'));
 
     getTableSchema(tableName).then(schema => {
-      const numericCols = new Set(
-        schema
-          .filter(c => /INT|REAL|NUMERIC/.test(String(c.type || '').toUpperCase()))
-          .map(c => c.name)
-      );
-
-      const cx = new sqlite3.Database(dbPath);
-      const run = (sql, params = []) => new Promise((res, rej) =>
-        cx.run(sql, params, function (err) { err ? rej(err) : res(this); }));
-      const all = (sql, params = []) => new Promise((res, rej) =>
-        cx.all(sql, params, (err, r) => err ? rej(err) : res(r)));
-
-      let insertCount = 0, updateCount = 0;
-      const events = [];
-
-      (async () => {
-        await run('PRAGMA busy_timeout = 5000');
-        await run('BEGIN');
-        try {
-          for (const rowData of rows) {
-            const keys = Object.keys(rowData).filter(k => /^[a-zA-Z0-9_-]+$/.test(k));
-
-            // Validación estricta de tipos (misma regla que la API)
-            for (const k of keys) {
-              if (!numericCols.has(k)) continue;
-              const v = rowData[k];
-              if (v === null || v === undefined || v === '') continue;
-              if (isNaN(v)) {
-                throw new Error(`La columna "${k}" requiere un valor numérico (recibido: "${v}").`);
-              }
-            }
-
-            const values = keys.map(k => rowData[k] === '' ? null : rowData[k]);
-
-            if (upsertKey && rowData[upsertKey] !== undefined) {
-              // Dentro de la transacción y en la MISMA conexión: ve filas aún sin commitear
-              const existing = await all(`SELECT rowid AS _rowid FROM ${tableName} WHERE ${upsertKey} = ?`, [rowData[upsertKey]]);
-              if (existing.length > 0) {
-                const rowid = existing[0]._rowid;
-                const setClauses = keys.map(k => `${k} = ?`).join(', ');
-                await run(`UPDATE ${tableName} SET ${setClauses} WHERE rowid = ?`, [...values, rowid]);
-                events.push({ event: 'row_updated', data: { _rowid: rowid, ...rowData } });
-                updateCount++;
-                continue;
-              }
-            }
-
-            let insSql = `INSERT INTO ${tableName} DEFAULT VALUES`;
-            if (keys.length > 0) {
-              insSql = `INSERT INTO ${tableName} (${keys.join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`;
-            }
-            const r = await run(insSql, values);
-            events.push({ event: 'row_created', data: { _rowid: r.lastID, ...rowData } });
-            insertCount++;
-          }
-
-          await run('COMMIT');
+      const { cx, run, all } = initDbTx();
+      runImportTransaction({ rows, tableName, upsertKey, numericCols: getNumericCols(schema), run, all })
+        .then(res => {
           cx.close();
-          resolve({ insertCount, updateCount, events });
-        } catch (err) {
-          try { await run('ROLLBACK'); } catch (_) { /* noop */ }
+          resolve(res);
+        })
+        .catch(async err => {
+          try { await run('ROLLBACK'); } catch (_) {}
           cx.close();
           reject(err);
-        }
-      })();
+        });
     }).catch(reject);
   });
 }
