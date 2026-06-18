@@ -10,7 +10,8 @@
     "client": "cd frontend && npm run dev",
     "dev": "concurrently \"npm run server\" \"npm run client\"",
     "start": "node server.js",
-    "mcp": "node mcp.js"
+    "mcp": "node mcp.js",
+    "test:smoke": "node tests/smoke.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

@@ -35,6 +35,6 @@ jobs:
       working-directory: ./frontend
 
     - name: Run E2E Smoke Driver (Backend + Database + API)
-      run: node .claude/skills/run-sqlite-spreadsheet-sync/driver.mjs
+      run: npm run test:smoke
       env:
         PORT: 3999
