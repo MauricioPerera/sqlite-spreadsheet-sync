@@ -253,14 +253,36 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
       // Crear tabla nueva
       const columnDefs = columns.map(col => {
         const cleanCol = col.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
-        // Intentar adivinar tipo de dato básico
-        let type = 'TEXT';
-        const sampleValue = data[0][col];
-        if (sampleValue !== undefined && sampleValue !== "") {
-          if (!isNaN(sampleValue)) {
-            type = sampleValue.toString().includes('.') ? 'REAL' : 'INTEGER';
+        
+        let type = 'INTEGER'; // Asumimos INTEGER y degradamos según encontramos datos
+        let hasData = false;
+        
+        // Escaneamos hasta 100 filas para inferir el tipo de forma más robusta
+        const rowsToScan = Math.min(data.length, 100);
+        
+        for (let i = 0; i < rowsToScan; i++) {
+          const val = data[i][col];
+          if (val === undefined || val === null || val === "") continue;
+          
+          hasData = true;
+          const strVal = String(val).trim();
+          
+          // Si tiene ceros a la izquierda (y no es el cero aislado), forzamos TEXT (ej: "007", "0921")
+          if (/^0\d+/.test(strVal)) {
+            type = 'TEXT';
+            break;
+          }
+          
+          if (isNaN(strVal)) {
+            type = 'TEXT';
+            break;
+          } else if (strVal.includes('.')) {
+            type = 'REAL';
           }
         }
+        
+        if (!hasData) type = 'TEXT'; // Si no hay datos, por seguridad es TEXT
+        
         return { name: cleanCol, type };
       });
 

@@ -40,6 +40,20 @@ Sigue estos pasos sencillos para poner en marcha el proyecto localmente o en un 
 
 ---
 
+## 🔒 Despliegue en Producción (Seguridad)
+
+Por defecto, la aplicación arranca en **Modo Desarrollo** sin autenticación. Si vas a exponer el sistema en una red local o en internet, **debes activar la seguridad** usando variables de entorno (`.env` en la raíz):
+
+```env
+API_KEY=tu_contraseña_secreta_super_segura
+ALLOWED_ORIGIN=https://tu-dominio-frontend.com
+```
+
+- `API_KEY`: Activa la autenticación en todos los endpoints de la API. En el frontend, deberás inyectar esta clave en `localStorage.setItem('apiKey', 'tu_contraseña_secreta_super_segura')` desde la consola del navegador (o adaptar la UI de React para pedirla).
+- `ALLOWED_ORIGIN`: Restringe el acceso CORS. Por defecto es `http://localhost:3000`.
+
+---
+
 ## 📁 Estructura del Proyecto
 
 ```
