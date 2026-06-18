@@ -25,9 +25,9 @@ npm run dev           # backend (3001) + frontend (3000) en paralelo
 
 ## Verificación antes de un PR
 
-1. Arranca la app (`npm run dev`) y comprueba el flujo de extremo a extremo: crear tabla → añadir fila → editar celda → exportar → importar → borrar.
-2. Comprueba que el frontend compila: `cd frontend && npm run build`.
-3. Verifica los endpoints clave con `curl` contra `http://localhost:3001` (ver [docs/API.md](docs/API.md)).
+1. Comprueba que el frontend compila de forma pura: `cd frontend && npm run build`.
+2. Ejecuta la validación End-to-End localmente: `npm run test:smoke` (requiere tener el puerto 3999 libre).
+3. Todas tus ramas en GitHub pasarán automáticamente por GitHub Actions (CI/CD) para asegurar la integridad total.
 
 ## Convenciones
 

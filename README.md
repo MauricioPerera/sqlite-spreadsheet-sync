@@ -50,17 +50,29 @@ Sigue estos pasos sencillos para poner en marcha el proyecto localmente o en un 
 
 ---
 
-## 🔒 Despliegue en Producción (Seguridad)
+## 🔒 Despliegue en Producción
 
-Por defecto, la aplicación arranca en **Modo Desarrollo** sin autenticación. Si vas a exponer el sistema en una red local o en internet, **debes activar la seguridad** usando variables de entorno (`.env` en la raíz):
+Recomendamos usar **Docker Compose** para despliegues de producción, ya que incluye persistencia automática de volumen y una imagen *multi-stage* optimizada.
+
+1. **Levantar el servicio**:
+   ```bash
+   docker compose up -d --build
+   ```
+
+2. **Variables de entorno (`.env`)**:
+
+Si vas a exponer el sistema en una red local o en internet, **debes activar la seguridad** usando el archivo `.env`:
 
 ```env
 API_KEY=tu_contraseña_secreta_super_segura
 ALLOWED_ORIGIN=https://tu-dominio-frontend.com
+DB_PATH=/data/data.db
+UPLOADS_DIR=/data/uploads/
 ```
 
-- `API_KEY`: Activa la autenticación en todos los endpoints de la API. En el frontend, deberás inyectar esta clave en `localStorage.setItem('apiKey', 'tu_contraseña_secreta_super_segura')` desde la consola del navegador (o adaptar la UI de React para pedirla).
+- `API_KEY`: Activa la autenticación en todos los endpoints de la API.
 - `ALLOWED_ORIGIN`: Restringe el acceso CORS. Por defecto es `http://localhost:3000`.
+- `DB_PATH` y `UPLOADS_DIR`: Configuradas por defecto en el Dockerfile para apuntar al volumen montado `/data`, asegurando que la base de datos y archivos temporales sobrevivan a reinicios del contenedor.
 
 ---
 
