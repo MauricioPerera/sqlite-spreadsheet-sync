@@ -228,14 +228,14 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
   }
 
   try {
-    // Leer el archivo con XLSX
-    const workbook = xlsx.readFile(filePath);
+    // Leer el archivo con XLSX (forzando texto crudo para no perder ceros a la izquierda)
+    const workbook = xlsx.readFile(filePath, { cellText: true, cellDates: true });
     const firstSheetName = workbook.SheetNames[0];
     const worksheet = workbook.Sheets[firstSheetName];
     
     // Convertir hoja a JSON
-    // raw: false fuerza a leer todo como string/formato visual, defval evita valores vacíos omitidos
-    const data = xlsx.utils.sheet_to_json(worksheet, { defval: "" });
+    // raw: false fuerza a extraer el texto formateado (ej. "007" en vez del número 7)
+    const data = xlsx.utils.sheet_to_json(worksheet, { defval: "", raw: false });
 
     if (data.length === 0) {
       throw new Error('El archivo Excel está vacío.');
