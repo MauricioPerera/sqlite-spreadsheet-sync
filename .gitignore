@@ -14,6 +14,12 @@ data.db-wal
 # Uploads directory
 uploads/
 
+# Local agent tooling (no se publica)
+.claude/
+
+# Environment
+.env
+
 # OS metadata
 .DS_Store
 Thumbs.db

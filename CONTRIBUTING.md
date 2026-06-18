@@ -23,18 +23,11 @@ npm run dev           # backend (3001) + frontend (3000) en paralelo
 | `frontend/src/App.jsx` | UI React (grilla Tabulator, modales, `authFetch`). |
 | `docs/` | Especificaciones (API, MCP, seguridad). |
 
-## Smoke test / arnés de validación
+## Verificación antes de un PR
 
-Hay un driver que ejercita la API de extremo a extremo (crear tabla → fila → editar → exportar → webhooks → borrar):
-
-```bash
-# Auto-arranca un server en un puerto libre, prueba y lo apaga:
-node .claude/skills/run-sqlite-spreadsheet-sync/driver.mjs
-
-# O contra un server ya en marcha:
-BASE_URL=http://localhost:3001 node .claude/skills/run-sqlite-spreadsheet-sync/driver.mjs
-```
-Debe terminar con `OK: 11 passed, 0 failed`. Ejecútalo antes de abrir un PR.
+1. Arranca la app (`npm run dev`) y comprueba el flujo de extremo a extremo: crear tabla → añadir fila → editar celda → exportar → importar → borrar.
+2. Comprueba que el frontend compila: `cd frontend && npm run build`.
+3. Verifica los endpoints clave con `curl` contra `http://localhost:3001` (ver [docs/API.md](docs/API.md)).
 
 ## Convenciones
 
