@@ -1,0 +1,29 @@
+{
+  "name": "sqlite-spreadsheet-sync",
+  "version": "1.0.0",
+  "description": "Excel-like spreadsheet UI for centralizing SQLite databases, preventing version desynchronization.",
+  "main": "server.js",
+  "scripts": {
+    "install-all": "npm install && npm run install-frontend",
+    "install-frontend": "cd frontend && npm install",
+    "server": "node server.js",
+    "client": "cd frontend && npm run dev",
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "start": "node server.js",
+    "mcp": "node mcp.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "multer": "^1.4.5-lts.1",
+    "sqlite3": "^5.1.7",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
