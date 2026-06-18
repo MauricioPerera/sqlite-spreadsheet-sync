@@ -37,7 +37,7 @@ Ejemplo de entrada en la config de un cliente (ajusta la ruta absoluta):
 | `list_tables` | — | Lista todas las tablas. |
 | `get_schema` | `tableName` | Esquema de columnas de una tabla. |
 | `read_table` | `tableName` | Todas las filas de una tabla. |
-| `execute_sql_query` | `query` | Ejecuta una consulta **de solo lectura** (`SELECT`/`PRAGMA`). Otras sentencias se rechazan. |
+| `execute_sql_query` | `query` | Ejecuta una consulta **de solo lectura** (`SELECT`, `PRAGMA` o `WITH`/CTE). Se ejecuta sobre una conexión SQLite `OPEN_READONLY`, por lo que cualquier intento de escritura (incluido `WITH ... DELETE/UPDATE/INSERT`) falla en el motor. |
 | `add_row` | `tableName`, `data` (objeto) | Inserta una fila. |
 | `update_row` | `tableName`, `rowid` (número), `data` (objeto) | Actualiza una fila por su `rowid`. |
 

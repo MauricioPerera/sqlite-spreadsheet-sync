@@ -9,6 +9,8 @@ Este documento resume las defensas implementadas y los límites conocidos. La ba
 | **Inyección SQL (datos)** | Todas las consultas con valores de usuario usan parámetros (`?`). El *upsert* de import valida `upsertKey` contra `^[a-zA-Z0-9_-]+$` y parametriza el valor. |
 | **Inyección SQL (identificadores)** | Nombres de tabla/columna validados con `^[a-zA-Z0-9_-]+$`. Tipos de columna restringidos a un whitelist cerrado (`TEXT, INTEGER, REAL, BLOB, NUMERIC`). |
 | **Corrupción de datos** | Validación estricta de tipos en el backend (API y MCP): texto no numérico en columnas numéricas → error. |
+| **Consultas de solo lectura** | `runReadOnlyQuery` (usado por el MCP y el upsert) corre sobre una conexión `OPEN_READONLY`; los CTE (`WITH`) están permitidos pero el motor rechaza cualquier escritura encubierta. |
+| **DoS por subida** | Import limitado a 10 MB y a extensiones `.xlsx`/`.xls`/`.csv`; contenido inválido → `400`. |
 | **SSRF (webhooks)** | Al registrar un webhook se rechazan URLs no `http(s)` o hacia hosts privados/locales. Los disparos llevan `AbortSignal.timeout(5000)`. |
 | **Autenticación** | API Key opcional vía header `x-api-key`, activada con la env `API_KEY`. |
 | **CSRF / orígenes cruzados** | CORS restringido a `ALLOWED_ORIGIN` (no comodín `*`). |

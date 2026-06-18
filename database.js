@@ -8,6 +8,18 @@ const db = new sqlite3.Database(dbPath);
 // Activar claves foráneas en la conexión principal
 db.run('PRAGMA foreign_keys = ON;');
 
+// Conexión SECUNDARIA de solo lectura para runReadOnlyQuery. Al abrirla con
+// OPEN_READONLY, el motor SQLite rechaza cualquier escritura — incluso las
+// encubiertas vía CTE (ej. `WITH x AS (...) DELETE FROM t`). Es la defensa real,
+// no el regex. Se crea perezosamente para no fallar antes de que exista data.db.
+let _dbReadOnly = null;
+function getReadOnlyDb() {
+  if (!_dbReadOnly) {
+    _dbReadOnly = new sqlite3.Database(dbPath, sqlite3.OPEN_READONLY);
+  }
+  return _dbReadOnly;
+}
+
 // Tipos SQL permitidos (whitelist cerrado para evitar inyección vía el campo "type")
 const ALLOWED_TYPES = ['TEXT', 'INTEGER', 'REAL', 'BLOB', 'NUMERIC'];
 
@@ -337,11 +349,13 @@ function deleteWebhook(id) {
 // Ejecutar una consulta SQL de solo lectura (con parámetros blindados opcionales)
 function runReadOnlyQuery(sql, params = []) {
   return new Promise((resolve, reject) => {
-    const upperSql = sql.trim().toUpperCase();
-    if (!upperSql.startsWith('SELECT') && !upperSql.startsWith('PRAGMA')) {
-      return reject(new Error('Solo se permiten consultas SELECT o PRAGMA por razones de seguridad.'));
+    // Primer filtro: la sentencia debe empezar por SELECT, PRAGMA o WITH (CTE).
+    if (!/^\s*(SELECT|PRAGMA|WITH)\b/i.test(sql)) {
+      return reject(new Error('Solo se permiten consultas SELECT, PRAGMA o WITH (CTE) por razones de seguridad.'));
     }
-    db.all(sql, params, (err, rows) => {
+    // Defensa real: la conexión es OPEN_READONLY, así que cualquier intento de
+    // escritura (incluido `WITH ... DELETE/UPDATE/INSERT`) falla en el motor.
+    getReadOnlyDb().all(sql, params, (err, rows) => {
       if (err) return reject(err);
       resolve(rows);
     });

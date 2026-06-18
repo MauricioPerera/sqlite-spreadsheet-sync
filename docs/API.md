@@ -31,7 +31,7 @@ CORS está restringido al origen `ALLOWED_ORIGIN` (por defecto `http://localhost
 
 | Código | Cuándo |
 |---|---|
-| `400` | Petición inválida (faltan campos, `upsertKey`/URL de webhook inválidos, tipo fuera del whitelist). |
+| `400` | Petición inválida: faltan campos, validación fallida (nombre/tipo/`upsertKey`/URL de webhook), archivo no permitido o corrupto. Los mensajes de validación se mapean a `400` para mayor claridad de los clientes (p.ej. n8n). |
 | `401` | Falta o es incorrecto el header `x-api-key` (solo si `API_KEY` está activa). |
 | `500` | Error de SQL, de validación de datos o interno. El mensaje viaja en `error`. |
 
@@ -118,6 +118,8 @@ Elimina la fila por su `_rowid`. Dispara `row_deleted`.
 | `file` | archivo | `.xlsx`, `.xls` o `.csv` (obligatorio). |
 | `newTableName` o `targetTable` | texto | Nombre destino (se sanitiza). |
 | `upsertKey` | texto | Opcional. Columna usada como clave para *upsert* (actualiza si existe, inserta si no). Debe cumplir `^[a-zA-Z0-9_-]+$`. |
+
+**Límites y validación**: tamaño máximo **10 MB**; solo se aceptan extensiones `.xlsx`, `.xls`, `.csv` (otras → `400`); si el contenido no es una hoja de cálculo válida, se devuelve `400` (no `500`).
 
 **Inferencia de tipos**: al crear una tabla nueva, se escanean hasta las primeras 100 filas por columna. Si aparece texto no numérico **o** valores con ceros a la izquierda (ej. `"007"`), la columna se fuerza a `TEXT`; si todo es entero → `INTEGER`; si hay decimales → `REAL`. La lectura usa `raw: false` para preservar el texto original.
 

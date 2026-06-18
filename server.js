@@ -18,15 +18,17 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'x-api-key'],
 }));
 
-// Autenticación opcional por API Key. Solo se activa si la variable API_KEY está definida.
-app.use((req, res, next) => {
+app.use(express.json());
+
+// Autenticación opcional por API Key — montada SOLO en /api para no bloquear el
+// frontend estático (express.static) cuando se sirve en producción.
+// Solo se activa si la variable API_KEY está definida.
+app.use('/api', (req, res, next) => {
   if (!API_KEY) return next();           // auth deshabilitada: flujo actual intacto
   if (req.method === 'OPTIONS') return next(); // dejar pasar el preflight CORS
   if (req.get('x-api-key') === API_KEY) return next();
   return res.status(401).json({ success: false, error: 'No autorizado: x-api-key ausente o inválida.' });
 });
-
-app.use(express.json());
 
 // --- SSRF: validación de URLs de webhook ---
 function isPrivateHost(hostname) {
@@ -54,8 +56,25 @@ function validateWebhookUrl(raw) {
   return null;
 }
 
+// Responde con 400 ante errores de validación/cliente y 500 ante el resto.
+// Útil para clientes como n8n, que distinguen "mi petición está mal" de "el server falló".
+function sendErr(res, err) {
+  const msg = (err && err.message) ? err.message : 'Error interno';
+  const isClientError = /inv[aá]lid|requiere|falta|no se permiten|permitid|vac[ií]o/i.test(msg);
+  return res.status(isClientError ? 400 : 500).json({ success: false, error: msg });
+}
+
 // Configuración de Multer para almacenar subidas temporales de Excel/CSV
-const upload = multer({ dest: 'uploads/' });
+const ALLOWED_UPLOAD_EXT = ['.xlsx', '.xls', '.csv'];
+const upload = multer({
+  dest: 'uploads/',
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB: evita agotamiento de disco/memoria (DoS)
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    if (ALLOWED_UPLOAD_EXT.includes(ext)) return cb(null, true);
+    cb(new Error('Tipo de archivo no permitido. Solo se aceptan .xlsx, .xls o .csv.'));
+  },
+});
 
 // Inicializar la base de datos antes de arrancar el servidor
 db.initDatabase()
@@ -100,7 +119,7 @@ app.get('/api/tables', async (req, res) => {
     const tables = await db.getTables();
     res.json({ success: true, tables });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    sendErr(res, err);
   }
 });
 
@@ -112,7 +131,7 @@ app.get('/api/tables/:tableName', async (req, res) => {
     const rows = await db.getTableData(tableName);
     res.json({ success: true, schema, rows });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    sendErr(res, err);
   }
 });
 
@@ -126,7 +145,7 @@ app.post('/api/tables', async (req, res) => {
     await db.createTable(tableName, columns);
     res.json({ success: true, message: `Tabla "${tableName}" creada.` });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    sendErr(res, err);
   }
 });
 
@@ -137,7 +156,7 @@ app.delete('/api/tables/:tableName', async (req, res) => {
     await db.dropTable(tableName);
     res.json({ success: true, message: `Tabla "${tableName}" eliminada.` });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    sendErr(res, err);
   }
 });
 
@@ -152,7 +171,7 @@ app.post('/api/tables/:tableName/columns', async (req, res) => {
     await db.addColumn(tableName, columnName, columnType || 'TEXT');
     res.json({ success: true, message: `Columna "${columnName}" agregada a "${tableName}".` });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    sendErr(res, err);
   }
 });
 
@@ -165,7 +184,7 @@ app.post('/api/tables/:tableName/rows', async (req, res) => {
     fireWebhooks('row_created', tableName, { _rowid: result.rowid, ...(initialData || {}) });
     res.json({ success: true, rowid: result.rowid });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    sendErr(res, err);
   }
 });
 
@@ -181,7 +200,7 @@ app.put('/api/tables/:tableName/rows/:rowid', async (req, res) => {
     fireWebhooks('row_updated', tableName, { _rowid: rowid, [columnName]: value });
     res.json({ success: true, changes: result.changes });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    sendErr(res, err);
   }
 });
 
@@ -194,7 +213,7 @@ app.patch('/api/tables/:tableName/rows/:rowid', async (req, res) => {
     fireWebhooks('row_updated', tableName, { _rowid: rowid, ...data });
     res.json({ success: true, changes: result.changes });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    sendErr(res, err);
   }
 });
 
@@ -206,7 +225,7 @@ app.delete('/api/tables/:tableName/rows/:rowid', async (req, res) => {
     fireWebhooks('row_deleted', tableName, { _rowid: rowid });
     res.json({ success: true, changes: result.changes });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    sendErr(res, err);
   }
 });
 
@@ -228,8 +247,14 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
   }
 
   try {
-    // Leer el archivo con XLSX (forzando texto crudo para no perder ceros a la izquierda)
-    const workbook = xlsx.readFile(filePath, { cellText: true, cellDates: true });
+    // Leer el archivo con XLSX (forzando texto crudo para no perder ceros a la izquierda).
+    // Si el contenido es basura/binario no-spreadsheet, devolvemos un 400 limpio (no un 500).
+    let workbook;
+    try {
+      workbook = xlsx.readFile(filePath, { cellText: true, cellDates: true });
+    } catch (parseErr) {
+      throw new Error('Archivo inválido o corrupto: no se pudo interpretar como hoja de cálculo.');
+    }
     const firstSheetName = workbook.SheetNames[0];
     const worksheet = workbook.Sheets[firstSheetName];
     
@@ -337,7 +362,7 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
   } catch (err) {
     // Limpiar archivo temporal en caso de error
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-    res.status(500).json({ success: false, error: err.message });
+    sendErr(res, err);
   }
 });
 
@@ -365,7 +390,7 @@ app.get('/api/export/:tableName', async (req, res) => {
     res.send(buffer);
 
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    sendErr(res, err);
   }
 });
 
@@ -377,7 +402,7 @@ app.get('/api/webhooks', async (req, res) => {
     const hooks = await db.getAllWebhooks();
     res.json({ success: true, webhooks: hooks });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    sendErr(res, err);
   }
 });
 
@@ -391,7 +416,7 @@ app.post('/api/webhooks', async (req, res) => {
     const result = await db.addWebhook(event, url, targetTable || '*');
     res.json({ success: true, id: result.id });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    sendErr(res, err);
   }
 });
 
@@ -401,8 +426,19 @@ app.delete('/api/webhooks/:id', async (req, res) => {
     const result = await db.deleteWebhook(req.params.id);
     res.json({ success: true, changes: result.changes });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    sendErr(res, err);
   }
+});
+
+// Manejador de errores de subida (Multer): tamaño excedido o extensión rechazada -> 400.
+// Multer reenvía estos errores a un middleware de 4 argumentos como este.
+app.use((err, req, res, next) => {
+  if (!err) return next();
+  if (req.file && req.file.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+  const msg = err.code === 'LIMIT_FILE_SIZE'
+    ? 'El archivo supera el límite de 10 MB.'
+    : err.message;
+  return res.status(400).json({ success: false, error: msg });
 });
 
 // Servir frontend en producción (después de construir)
