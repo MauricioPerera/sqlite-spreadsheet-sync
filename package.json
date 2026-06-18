@@ -18,7 +18,7 @@
     "express": "^4.19.2",
     "multer": "^1.4.5-lts.1",
     "sqlite3": "^5.1.7",
-    "xlsx": "^0.18.5"
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"
