@@ -121,6 +121,8 @@ Elimina la fila por su `_rowid`. Dispara `row_deleted`.
 
 **Límites y validación**: tamaño máximo **10 MB**; solo se aceptan extensiones `.xlsx`, `.xls`, `.csv` (otras → `400`); si el contenido no es una hoja de cálculo válida, se devuelve `400` (no `500`).
 
+**Atomicidad**: la inserción/upsert se ejecuta dentro de una transacción (`BEGIN`/`COMMIT`/`ROLLBACK`) sobre una conexión dedicada. Si **cualquier** fila falla (p.ej. un valor no numérico en una columna `INTEGER`), se revierte el lote completo: **no quedan filas a medias**. Los webhooks solo se disparan tras un commit exitoso.
+
 **Inferencia de tipos**: al crear una tabla nueva, se escanean hasta las primeras 100 filas por columna. Si aparece texto no numérico **o** valores con ceros a la izquierda (ej. `"007"`), la columna se fuerza a `TEXT`; si todo es entero → `INTEGER`; si hay decimales → `REAL`. La lectura usa `raw: false` para preservar el texto original.
 
 ```json

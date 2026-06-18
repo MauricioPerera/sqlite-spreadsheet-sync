@@ -314,41 +314,21 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
       await db.createTable(sanitizedTableName, columnDefs);
     }
 
-    // Insertar registros uno a uno
-    let insertCount = 0;
-    let updateCount = 0;
-    for (const row of data) {
+    // Construir las filas con los nombres de columna saneados
+    const cleanRows = data.map(row => {
       const rowData = {};
       columns.forEach(col => {
         const cleanCol = col.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
         rowData[cleanCol] = row[col];
       });
-      
-      if (upsertKey && rowData[upsertKey] !== undefined) {
-        // Modo Upsert
-        // upsertKey ya validado contra regex arriba; el valor va parametrizado para evitar inyección
-        const existingRecords = await db.runReadOnlyQuery(
-          `SELECT rowid AS _rowid FROM ${sanitizedTableName} WHERE ${upsertKey} = ?`,
-          [rowData[upsertKey]]
-        );
-        
-        if (existingRecords && existingRecords.length > 0) {
-          const rowid = existingRecords[0]._rowid;
-          await db.updateRow(sanitizedTableName, rowid, rowData);
-          fireWebhooks('row_updated', sanitizedTableName, { _rowid: rowid, ...rowData });
-          updateCount++;
-        } else {
-          const result = await db.addRow(sanitizedTableName, rowData);
-          fireWebhooks('row_created', sanitizedTableName, { _rowid: result.rowid, ...rowData });
-          insertCount++;
-        }
-      } else {
-        // Normal Insert
-        const result = await db.addRow(sanitizedTableName, rowData);
-        fireWebhooks('row_created', sanitizedTableName, { _rowid: result.rowid, ...rowData });
-        insertCount++;
-      }
-    }
+      return rowData;
+    });
+
+    // Inserción ATÓMICA: si cualquier fila falla, ROLLBACK total (sin filas huérfanas).
+    const { insertCount, updateCount, events } = await db.bulkImport(sanitizedTableName, cleanRows, upsertKey);
+
+    // Los webhooks se disparan SOLO tras un commit exitoso
+    for (const ev of events) fireWebhooks(ev.event, sanitizedTableName, ev.data);
 
     // Eliminar archivo temporal
     fs.unlinkSync(filePath);

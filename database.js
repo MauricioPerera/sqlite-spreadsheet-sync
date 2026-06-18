@@ -346,6 +346,91 @@ function deleteWebhook(id) {
   });
 }
 
+// Importación masiva ATÓMICA.
+// Usa una conexión DEDICADA (no la compartida) para que la transacción no entrelace
+// escrituras de otras peticiones concurrentes. Si una sola fila falla (p.ej. validación
+// de tipo), se hace ROLLBACK completo: no quedan filas "huérfanas".
+// `rows` son objetos con las claves de columna ya saneadas.
+// Devuelve { insertCount, updateCount, events } — los webhooks se disparan FUERA, tras el commit.
+function bulkImport(tableName, rows, upsertKey) {
+  return new Promise((resolve, reject) => {
+    if (!/^[a-zA-Z0-9_-]+$/.test(tableName)) {
+      return reject(new Error('Nombre de tabla inválido'));
+    }
+    if (upsertKey && !/^[a-zA-Z0-9_-]+$/.test(upsertKey)) {
+      return reject(new Error('upsertKey inválido'));
+    }
+
+    getTableSchema(tableName).then(schema => {
+      const numericCols = new Set(
+        schema
+          .filter(c => /INT|REAL|NUMERIC/.test(String(c.type || '').toUpperCase()))
+          .map(c => c.name)
+      );
+
+      const cx = new sqlite3.Database(dbPath);
+      const run = (sql, params = []) => new Promise((res, rej) =>
+        cx.run(sql, params, function (err) { err ? rej(err) : res(this); }));
+      const all = (sql, params = []) => new Promise((res, rej) =>
+        cx.all(sql, params, (err, r) => err ? rej(err) : res(r)));
+
+      let insertCount = 0, updateCount = 0;
+      const events = [];
+
+      (async () => {
+        await run('PRAGMA busy_timeout = 5000');
+        await run('BEGIN');
+        try {
+          for (const rowData of rows) {
+            const keys = Object.keys(rowData).filter(k => /^[a-zA-Z0-9_-]+$/.test(k));
+
+            // Validación estricta de tipos (misma regla que la API)
+            for (const k of keys) {
+              if (!numericCols.has(k)) continue;
+              const v = rowData[k];
+              if (v === null || v === undefined || v === '') continue;
+              if (isNaN(v)) {
+                throw new Error(`La columna "${k}" requiere un valor numérico (recibido: "${v}").`);
+              }
+            }
+
+            const values = keys.map(k => rowData[k] === '' ? null : rowData[k]);
+
+            if (upsertKey && rowData[upsertKey] !== undefined) {
+              // Dentro de la transacción y en la MISMA conexión: ve filas aún sin commitear
+              const existing = await all(`SELECT rowid AS _rowid FROM ${tableName} WHERE ${upsertKey} = ?`, [rowData[upsertKey]]);
+              if (existing.length > 0) {
+                const rowid = existing[0]._rowid;
+                const setClauses = keys.map(k => `${k} = ?`).join(', ');
+                await run(`UPDATE ${tableName} SET ${setClauses} WHERE rowid = ?`, [...values, rowid]);
+                events.push({ event: 'row_updated', data: { _rowid: rowid, ...rowData } });
+                updateCount++;
+                continue;
+              }
+            }
+
+            let insSql = `INSERT INTO ${tableName} DEFAULT VALUES`;
+            if (keys.length > 0) {
+              insSql = `INSERT INTO ${tableName} (${keys.join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`;
+            }
+            const r = await run(insSql, values);
+            events.push({ event: 'row_created', data: { _rowid: r.lastID, ...rowData } });
+            insertCount++;
+          }
+
+          await run('COMMIT');
+          cx.close();
+          resolve({ insertCount, updateCount, events });
+        } catch (err) {
+          try { await run('ROLLBACK'); } catch (_) { /* noop */ }
+          cx.close();
+          reject(err);
+        }
+      })();
+    }).catch(reject);
+  });
+}
+
 // Ejecutar una consulta SQL de solo lectura (con parámetros blindados opcionales)
 function runReadOnlyQuery(sql, params = []) {
   return new Promise((resolve, reject) => {
@@ -378,5 +463,6 @@ module.exports = {
   getWebhooksForEvent,
   addWebhook,
   deleteWebhook,
-  runReadOnlyQuery
+  runReadOnlyQuery,
+  bulkImport
 };
