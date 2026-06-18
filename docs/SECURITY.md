@@ -35,6 +35,7 @@ Estos puntos **no son bugs de código**, sino responsabilidades de la capa de in
 3. **SSRF por IP literal.** El bloqueo es por rango de IP; un hostname público que resuelva a una IP interna (DNS rebinding) no se detecta.
 4. **Webhooks ya almacenados no se re-validan.** La validación SSRF aplica solo en el registro, no a los que ya están en la base.
 5. **MCP `execute_sql_query`** acepta SQL del cliente (solo lectura) sin parametrizar: superficie de confianza.
+6. **Vulnerabilidad de Build (`node-tar`) en `npm audit`.** El reporte de auditoría marca CVEs en `node-tar`, dependencia transitiva de `sqlite3` vía `node-gyp`. Este es un riesgo de cadena de suministro que solo se ejecuta en tiempo de instalación (`npm install`) para extraer binarios. No es accesible ni explotable en tiempo de ejecución. Una futura migración a `better-sqlite3` o al nativo `node:sqlite` erradicará este ruido de auditoría.
 
 ## Reporte de vulnerabilidades
 
