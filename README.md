@@ -14,6 +14,16 @@ Esto previene la desincronización y pérdida de información provocada por el u
 
 ---
 
+## 📚 Documentación
+
+* [Especificación de la API REST](docs/API.md) — endpoints, autenticación, validación y errores.
+* [Servidor MCP](docs/MCP.md) — integración con asistentes (Claude, etc.) vía Model Context Protocol.
+* [Modelo de Seguridad](docs/SECURITY.md) — defensas implementadas y hardening de despliegue.
+* [Guía de Contribución](CONTRIBUTING.md) — puesta en marcha, smoke test y convenciones.
+* [`.env.example`](.env.example) — variables de entorno de configuración.
+
+---
+
 ## 🛠️ Requisitos
 * [Node.js](https://nodejs.org/) (Versión 18 o superior recomendada).
 
@@ -81,3 +91,4 @@ sqlite-spreadsheet-sync/
 * **Iniciar backend solo**: `npm run server` (http://localhost:3001)
 * **Iniciar frontend solo**: `npm run client` (http://localhost:3000)
 * **Ejecutar todo junto (Recomendado)**: `npm run dev`
+* **Servidor MCP (stdio)**: `npm run mcp` (ver [docs/MCP.md](docs/MCP.md))
