@@ -8,10 +8,51 @@ const db = require('./database');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const API_KEY = process.env.API_KEY; // si está definida, se exige x-api-key en cada petición
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'http://localhost:3000';
 
 // Middlewares
-app.use(cors());
+// CORS restringido a un único origen (mitiga CSRF desde sitios de terceros)
+app.use(cors({
+  origin: ALLOWED_ORIGIN,
+  allowedHeaders: ['Content-Type', 'x-api-key'],
+}));
+
+// Autenticación opcional por API Key. Solo se activa si la variable API_KEY está definida.
+app.use((req, res, next) => {
+  if (!API_KEY) return next();           // auth deshabilitada: flujo actual intacto
+  if (req.method === 'OPTIONS') return next(); // dejar pasar el preflight CORS
+  if (req.get('x-api-key') === API_KEY) return next();
+  return res.status(401).json({ success: false, error: 'No autorizado: x-api-key ausente o inválida.' });
+});
+
 app.use(express.json());
+
+// --- SSRF: validación de URLs de webhook ---
+function isPrivateHost(hostname) {
+  const h = (hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (h === 'localhost' || h.endsWith('.localhost')) return true;
+  if (h === '0.0.0.0' || h === '::1' || h === '::') return true;
+  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) {
+    const a = +m[1], b = +m[2];
+    if (a === 127) return true;                 // loopback
+    if (a === 10) return true;                  // 10.0.0.0/8
+    if (a === 192 && b === 168) return true;    // 192.168.0.0/16
+    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
+    if (a === 169 && b === 254) return true;    // link-local
+  }
+  return false;
+}
+
+// Devuelve un mensaje de error si la URL no es segura, o null si es válida.
+function validateWebhookUrl(raw) {
+  let u;
+  try { u = new URL(raw); } catch { return 'URL de webhook inválida.'; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return 'Solo se permiten URLs http/https.';
+  if (isPrivateHost(u.hostname)) return 'No se permiten webhooks hacia redes locales o privadas (SSRF).';
+  return null;
+}
 
 // Configuración de Multer para almacenar subidas temporales de Excel/CSV
 const upload = multer({ dest: 'uploads/' });
@@ -39,7 +80,8 @@ async function fireWebhooks(event, tableName, payload) {
         fetch(hook.url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ event, table: tableName, data: payload, timestamp: new Date().toISOString() })
+          body: JSON.stringify({ event, table: tableName, data: payload, timestamp: new Date().toISOString() }),
+          signal: AbortSignal.timeout(5000) // evita que webhooks lentos (tarpits) agoten conexiones
         }).catch(e => console.error(`Error disparando webhook a ${hook.url}:`, e.message));
       } catch (err) {
         console.error(`Error interno al llamar webhook ${hook.url}:`, err.message);
@@ -179,6 +221,12 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
   const filePath = req.file.path;
   const finalTableName = newTableName || targetTable;
 
+  // Validar estrictamente la clave de upsert para evitar inyección SQL en posición de columna
+  if (upsertKey && !/^[a-zA-Z0-9_-]+$/.test(upsertKey)) {
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    return res.status(400).json({ success: false, error: 'upsertKey inválido.' });
+  }
+
   try {
     // Leer el archivo con XLSX
     const workbook = xlsx.readFile(filePath);
@@ -231,12 +279,11 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
       
       if (upsertKey && rowData[upsertKey] !== undefined) {
         // Modo Upsert
-        // Parametrizamos la consulta en vez de usar template literals para evitar inyeccion
-        const existingRecords = await new Promise((resolve, reject) => {
-           db.runReadOnlyQuery(`SELECT rowid AS _rowid FROM ${sanitizedTableName} WHERE ${upsertKey} = '${rowData[upsertKey]}'`)
-             .then(resolve)
-             .catch(reject);
-        });
+        // upsertKey ya validado contra regex arriba; el valor va parametrizado para evitar inyección
+        const existingRecords = await db.runReadOnlyQuery(
+          `SELECT rowid AS _rowid FROM ${sanitizedTableName} WHERE ${upsertKey} = ?`,
+          [rowData[upsertKey]]
+        );
         
         if (existingRecords && existingRecords.length > 0) {
           const rowid = existingRecords[0]._rowid;
@@ -316,6 +363,8 @@ app.get('/api/webhooks', async (req, res) => {
 app.post('/api/webhooks', async (req, res) => {
   const { event, url, targetTable } = req.body;
   if (!event || !url) return res.status(400).json({ success: false, error: 'Faltan event o url' });
+  const urlError = validateWebhookUrl(url);
+  if (urlError) return res.status(400).json({ success: false, error: urlError });
   try {
     const result = await db.addWebhook(event, url, targetTable || '*');
     res.json({ success: true, id: result.id });

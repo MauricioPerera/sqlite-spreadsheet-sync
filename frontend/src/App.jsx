@@ -19,6 +19,17 @@ import { TabulatorFull as Tabulator } from 'tabulator-tables';
 // Estilos de Tabulator - Usaremos el tema moderno oscuro/claro
 import 'tabulator-tables/dist/css/tabulator_modern.min.css';
 
+// Clave de API opcional, almacenada localmente (preparada para una futura UI de configuración).
+// Si el servidor corre con API_KEY definida, basta con: localStorage.setItem('apiKey', '<clave>')
+const API_KEY = (typeof localStorage !== 'undefined' && localStorage.getItem('apiKey')) || '';
+
+// Wrapper de fetch que adjunta el header x-api-key cuando hay una clave configurada.
+function authFetch(url, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  if (API_KEY) headers['x-api-key'] = API_KEY;
+  return fetch(url, { ...options, headers });
+}
+
 function App() {
   const [tables, setTables] = useState([]);
   const [activeTable, setActiveTable] = useState('');
@@ -48,7 +59,7 @@ function App() {
   // Obtener lista de tablas
   const fetchTables = async (selectDefault = false) => {
     try {
-      const res = await fetch('/api/tables');
+      const res = await authFetch('/api/tables');
       const data = await res.json();
       if (data.success) {
         setTables(data.tables);
@@ -66,7 +77,7 @@ function App() {
     if (!tableName) return;
     setLoading(true);
     try {
-      const res = await fetch(`/api/tables/${tableName}`);
+      const res = await authFetch(`/api/tables/${tableName}`);
       const data = await res.json();
       if (data.success) {
         setSchema(data.schema);
@@ -142,7 +153,7 @@ function App() {
 
             setSyncState('saving');
             try {
-              const response = await fetch(`/api/tables/${activeTable}/rows/${rowid}`, {
+              const response = await authFetch(`/api/tables/${activeTable}/rows/${rowid}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ columnName, value })
@@ -215,7 +226,7 @@ function App() {
     if (!activeTable) return;
     setSyncState('saving');
     try {
-      const res = await fetch(`/api/tables/${activeTable}/rows`, {
+      const res = await authFetch(`/api/tables/${activeTable}/rows`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({})
@@ -253,7 +264,7 @@ function App() {
       let successCount = 0;
       for (const row of selectedRows) {
         const rowData = row.getData();
-        const res = await fetch(`/api/tables/${activeTable}/rows/${rowData._rowid}`, {
+        const res = await authFetch(`/api/tables/${activeTable}/rows/${rowData._rowid}`, {
           method: 'DELETE'
         });
         const data = await res.json();
@@ -276,7 +287,7 @@ function App() {
     if (!newColName.trim() || !activeTable) return;
     
     try {
-      const res = await fetch(`/api/tables/${activeTable}/columns`, {
+      const res = await authFetch(`/api/tables/${activeTable}/columns`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -304,7 +315,7 @@ function App() {
     if (!newTableName.trim()) return;
 
     try {
-      const res = await fetch('/api/tables', {
+      const res = await authFetch('/api/tables', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -360,7 +371,7 @@ function App() {
 
     setLoading(true);
     try {
-      const res = await fetch('/api/import', {
+      const res = await authFetch('/api/import', {
         method: 'POST',
         body: formData
       });
@@ -383,10 +394,32 @@ function App() {
   };
 
   // Exportar Excel
-  const handleExport = () => {
+  const handleExport = async () => {
     if (!activeTable) return;
-    window.open(`/api/export/${activeTable}`, '_blank');
     showNotice('Exportación iniciada...');
+    try {
+      const res = await authFetch(`/api/export/${activeTable}`);
+      if (!res.ok) {
+        if (res.status === 401) {
+          throw new Error('No autorizado. Revisa tu API_KEY.');
+        }
+        throw new Error('Error al exportar tabla');
+      }
+      
+      // Descargar como Blob
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${activeTable}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      
+    } catch (err) {
+      showNotice(err.message, 'error');
+    }
   };
 
   // Eliminar tabla activa
@@ -395,7 +428,7 @@ function App() {
     if (!confirm(`¿ESTÁS SEGURO de que deseas eliminar COMPLETAMENTE la tabla "${activeTable}" y todos sus registros? Esta acción no se puede deshacer.`)) return;
 
     try {
-      const res = await fetch(`/api/tables/${activeTable}`, {
+      const res = await authFetch(`/api/tables/${activeTable}`, {
         method: 'DELETE'
       });
       const data = await res.json();

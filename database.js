@@ -8,6 +8,42 @@ const db = new sqlite3.Database(dbPath);
 // Activar claves foráneas en la conexión principal
 db.run('PRAGMA foreign_keys = ON;');
 
+// Tipos SQL permitidos (whitelist cerrado para evitar inyección vía el campo "type")
+const ALLOWED_TYPES = ['TEXT', 'INTEGER', 'REAL', 'BLOB', 'NUMERIC'];
+
+// Normaliza y valida un tipo de columna contra el whitelist. Lanza si es inválido.
+function normalizeColumnType(rawType) {
+  const type = String(rawType || 'TEXT').trim().toUpperCase();
+  if (!ALLOWED_TYPES.includes(type)) {
+    throw new Error(`Tipo de columna inválido: "${rawType}". Permitidos: ${ALLOWED_TYPES.join(', ')}`);
+  }
+  return type;
+}
+
+// Valida que los valores de "data" sean compatibles con el tipo declarado en el esquema.
+// Las columnas numéricas (INTEGER/REAL/NUMERIC) rechazan texto no numérico.
+// Valores null o cadena vacía se consideran válidos (se guardarán como NULL).
+function validateDataAgainstSchema(tableName, data) {
+  return getTableSchema(tableName).then(schema => {
+    const typeByName = {};
+    schema.forEach(col => { typeByName[col.name] = String(col.type || '').toUpperCase(); });
+
+    for (const key of Object.keys(data || {})) {
+      const declaredType = typeByName[key];
+      if (!declaredType) continue; // columna desconocida: SQL la rechazará después
+      const isNumeric = declaredType.includes('INT') || declaredType.includes('REAL') || declaredType.includes('NUMERIC');
+      if (!isNumeric) continue;
+
+      const value = data[key];
+      if (value === null || value === undefined || value === '') continue; // -> NULL
+      if (isNaN(value)) {
+        throw new Error(`La columna "${key}" es ${declaredType} y requiere un valor numérico (recibido: "${value}").`);
+      }
+    }
+    return true;
+  });
+}
+
 // Inicializar la base de datos con una tabla de ejemplo si está vacía
 function initDatabase() {
   return new Promise((resolve, reject) => {
@@ -107,11 +143,11 @@ function getTableData(tableName) {
 
 // Actualizar una celda específica usando el rowid de la fila
 function updateCell(tableName, rowid, columnName, value) {
-  return new Promise((resolve, reject) => {
-    if (!/^[a-zA-Z0-9_-]+$/.test(tableName) || !/^[a-zA-Z0-9_-]+$/.test(columnName)) {
-      return reject(new Error('Nombre de tabla o columna inválido'));
-    }
+  if (!/^[a-zA-Z0-9_-]+$/.test(tableName) || !/^[a-zA-Z0-9_-]+$/.test(columnName)) {
+    return Promise.reject(new Error('Nombre de tabla o columna inválido'));
+  }
 
+  return validateDataAgainstSchema(tableName, { [columnName]: value }).then(() => new Promise((resolve, reject) => {
     // Convertir valor vacío a null si corresponde, o sanitizar
     const finalValue = value === '' ? null : value;
 
@@ -123,16 +159,16 @@ function updateCell(tableName, rowid, columnName, value) {
         resolve({ changes: this.changes });
       }
     );
-  });
+  }));
 }
 
 // Actualizar multiples columnas de una fila
 function updateRow(tableName, rowid, data) {
-  return new Promise((resolve, reject) => {
-    if (!/^[a-zA-Z0-9_-]+$/.test(tableName)) {
-      return reject(new Error('Nombre de tabla inválido'));
-    }
+  if (!/^[a-zA-Z0-9_-]+$/.test(tableName)) {
+    return Promise.reject(new Error('Nombre de tabla inválido'));
+  }
 
+  return validateDataAgainstSchema(tableName, data).then(() => new Promise((resolve, reject) => {
     const keys = Object.keys(data).filter(k => /^[a-zA-Z0-9_-]+$/.test(k));
     if (keys.length === 0) return resolve({ changes: 0 });
 
@@ -144,16 +180,16 @@ function updateRow(tableName, rowid, data) {
       if (err) return reject(err);
       resolve({ changes: this.changes });
     });
-  });
+  }));
 }
 
 // Agregar una fila vacía o con datos iniciales
 function addRow(tableName, initialData = {}) {
-  return new Promise((resolve, reject) => {
-    if (!/^[a-zA-Z0-9_-]+$/.test(tableName)) {
-      return reject(new Error('Nombre de tabla inválido'));
-    }
+  if (!/^[a-zA-Z0-9_-]+$/.test(tableName)) {
+    return Promise.reject(new Error('Nombre de tabla inválido'));
+  }
 
+  return validateDataAgainstSchema(tableName, initialData).then(() => new Promise((resolve, reject) => {
     const keys = Object.keys(initialData).filter(k => /^[a-zA-Z0-9_-]+$/.test(k));
     const placeholders = keys.map(() => '?').join(', ');
     const values = keys.map(k => initialData[k] === '' ? null : initialData[k]);
@@ -167,7 +203,7 @@ function addRow(tableName, initialData = {}) {
       if (err) return reject(err);
       resolve({ rowid: this.lastID });
     });
-  });
+  }));
 }
 
 // Eliminar una fila usando rowid
@@ -192,11 +228,11 @@ function createTable(tableName, columns) {
 
     const columnDefs = columns.map(col => {
       const colName = col.name;
-      const colType = col.type || 'TEXT';
       if (!/^[a-zA-Z0-9_-]+$/.test(colName)) {
         throw new Error(`Nombre de columna inválido: ${colName}`);
       }
-      
+      const colType = normalizeColumnType(col.type);
+
       let def = `${colName} ${colType}`;
       if (col.foreignKey && col.foreignKey.table && col.foreignKey.column) {
         // Validación básica de nombres de tabla y columna para la FK
@@ -235,7 +271,13 @@ function addColumn(tableName, columnName, columnType = 'TEXT') {
     if (!/^[a-zA-Z0-9_-]+$/.test(tableName) || !/^[a-zA-Z0-9_-]+$/.test(columnName)) {
       return reject(new Error('Nombre de tabla o columna inválido'));
     }
-    db.run(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnType}`, (err) => {
+    let safeType;
+    try {
+      safeType = normalizeColumnType(columnType);
+    } catch (e) {
+      return reject(e);
+    }
+    db.run(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${safeType}`, (err) => {
       if (err) return reject(err);
       resolve();
     });
@@ -292,14 +334,14 @@ function deleteWebhook(id) {
   });
 }
 
-// Ejecutar una consulta SQL de solo lectura
-function runReadOnlyQuery(sql) {
+// Ejecutar una consulta SQL de solo lectura (con parámetros blindados opcionales)
+function runReadOnlyQuery(sql, params = []) {
   return new Promise((resolve, reject) => {
     const upperSql = sql.trim().toUpperCase();
     if (!upperSql.startsWith('SELECT') && !upperSql.startsWith('PRAGMA')) {
       return reject(new Error('Solo se permiten consultas SELECT o PRAGMA por razones de seguridad.'));
     }
-    db.all(sql, (err, rows) => {
+    db.all(sql, params, (err, rows) => {
       if (err) return reject(err);
       resolve(rows);
     });
