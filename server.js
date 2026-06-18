@@ -71,7 +71,7 @@ function sendErr(res, err) {
 // Configuración de Multer para almacenar subidas temporales de Excel/CSV
 const ALLOWED_UPLOAD_EXT = ['.xlsx', '.xls', '.csv'];
 const upload = multer({
-  dest: 'uploads/',
+  dest: process.env.UPLOADS_DIR || 'uploads/',
   limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB: evita agotamiento de disco/memoria (DoS)
   fileFilter: (req, file, cb) => {
     const ext = path.extname(file.originalname || '').toLowerCase();

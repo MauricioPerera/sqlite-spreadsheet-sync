@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    container_name: sqlite-spreadsheet-sync
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=production
+      # - API_KEY=tu_clave_super_secreta_aqui # Descomentar para proteger la app
+    volumes:
+      - sqlite_data:/data
+    restart: unless-stopped
+
+volumes:
+  sqlite_data:

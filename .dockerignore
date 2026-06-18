@@ -1,0 +1,15 @@
+node_modules/
+frontend/node_modules/
+frontend/dist/
+uploads/
+data.db
+data.db-journal
+data.db-shm
+data.db-wal
+.git/
+.claude/
+.env
+.github/
+mcp_scanner.py
+mcp_issues.json
+npm-debug.log*
